@@ -23,6 +23,7 @@ import h5py
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
+import numpy as np
 
 
 def ddpm_schedules(beta1: float, beta2: float, T: int) -> Dict[str, torch.Tensor]:
@@ -157,12 +158,16 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
     ddpm = DDPM(eps_model=DummyEpsModel(1), betas=(1e-4, 0.02), n_T=1000)
     ddpm.to(device)
 
+    magnetdb = h5py.File('/home/s214435/data/magfield_64.h5')
+    dbmean = np.mean(magnetdb['field'][:][0])
+    dbstd = np.std(magnetdb['field'][:][0])
+
     tf = transforms.Compose(
-        [transforms.ToTensor()]
+        [transforms.ToTensor(), transforms.Normalize((dbmean), (dbstd))]
     )
 
     dataset = MagnetismData(
-    h5py.File('/home/s214435/data/magfield_32.h5'),
+    magnetdb,
     transform=tf
     )
 
@@ -188,7 +193,7 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
 
         ddpm.eval()
         with torch.no_grad():
-            xh = ddpm.sample(16, (1, 32, 32), device)
+            xh = ddpm.sample(16, (1, 64, 64), device)
             fig, axes = plt.subplots(nrows=4, ncols=4, sharex=True,
                                     sharey=True, figsize=(15,10))
             norm = colors.Normalize(vmin=-0.25, vmax=0.25)
@@ -198,7 +203,7 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
                 ax = axes.flat[j]
                 im = ax.imshow(img.numpy(), cmap='bwr', norm=norm, origin="lower")
 
-            cbar_ax = fig.add_axes([0.825, 0.345, 0.015, 0.3])
+            cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
             fig.colorbar(im, cax=cbar_ax)
             fig.savefig(f"./contents/ddpm_sample_{i}.png")
             plt.close()
