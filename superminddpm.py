@@ -19,6 +19,11 @@ from torchvision.datasets import MNIST
 from torchvision import transforms
 from torchvision.utils import save_image, make_grid
 
+import h5py
+from torch.utils.data import Dataset
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+
 
 def ddpm_schedules(beta1: float, beta2: float, T: int) -> Dict[str, torch.Tensor]:
     """
@@ -131,7 +136,21 @@ class DDPM(nn.Module):
             )
 
         return x_i
+    
+class MagnetismData(Dataset):
+    def __init__(self, db, transform=None):
+        self.db = db
+        self.transform = transform
 
+    def __len__(self):
+        return len(self.db['field'])
+
+    def __getitem__(self, idx):
+        #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
+        field = self.db['field'][idx][0]
+        if self.transform:
+            field = self.transform(field)
+        return field
 
 def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
 
@@ -139,15 +158,14 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
     ddpm.to(device)
 
     tf = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5,), (1.0))]
+        [transforms.ToTensor()]
     )
 
-    dataset = MNIST(
-        "./data",
-        train=True,
-        download=True,
-        transform=tf,
+    dataset = MagnetismData(
+    h5py.File('/home/s214435/data/magfield_32.h5'),
+    transform=tf
     )
+
     dataloader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=20)
     optim = torch.optim.Adam(ddpm.parameters(), lr=2e-4)
 
@@ -156,7 +174,7 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
 
         pbar = tqdm(dataloader)
         loss_ema = None
-        for x, _ in pbar:
+        for x in pbar:
             optim.zero_grad()
             x = x.to(device)
             loss = ddpm(x)
@@ -170,9 +188,27 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
 
         ddpm.eval()
         with torch.no_grad():
-            xh = ddpm.sample(16, (1, 28, 28), device)
-            grid = make_grid(xh, nrow=4)
-            save_image(grid, f"./contents/ddpm_sample_{i}.png")
+            xh = ddpm.sample(16, (1, 32, 32), device)
+            fig, axes = plt.subplots(nrows=4, ncols=4, sharex=True,
+                                    sharey=True, figsize=(15,10))
+            norm = colors.Normalize(vmin=-0.25, vmax=0.25)
+            
+            for j, comp in enumerate(xh):
+                img = comp.cpu().permute(1,2,0)
+                ax = axes.flat[j]
+                im = ax.imshow(img.numpy(), cmap='bwr', norm=norm, origin="lower")
+
+            cbar_ax = fig.add_axes([0.825, 0.345, 0.015, 0.3])
+            fig.colorbar(im, cax=cbar_ax)
+            fig.savefig(f"./contents/ddpm_sample_{i}.png")
+            plt.close()
+
+
+
+            #grid = make_grid(xh, nrow=4)
+            
+            
+            #save_image(grid, f"./contents/ddpm_sample_{i}.png")
 
             # save model
             torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
