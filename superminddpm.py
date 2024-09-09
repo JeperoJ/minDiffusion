@@ -25,6 +25,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 import numpy as np
 
+import wandb
+from mindiffusion.unet import NaiveUnet
+
 
 def ddpm_schedules(beta1: float, beta2: float, T: int) -> Dict[str, torch.Tensor]:
     """
@@ -148,22 +151,33 @@ class MagnetismData(Dataset):
 
     def __getitem__(self, idx):
         #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
-        field = self.db['field'][idx][0]
+        field = self.db['field'][idx]
         if self.transform:
             field = self.transform(field)
         return field
 
 def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
 
-    ddpm = DDPM(eps_model=DummyEpsModel(1), betas=(1e-4, 0.02), n_T=1000)
+    cfg = {"epochs": n_epoch, "betas": (1e-4, 0.02), "n_T": 1000}
+    
+    
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="mag-diffusion",
+
+        # track hyperparameters and run metadata
+        config=cfg
+    )
+    
+    ddpm = DDPM(eps_model=DummyEpsModel(1), betas=cfg["betas"], n_T=cfg["n_T"])
     ddpm.to(device)
 
     magnetdb = h5py.File('/home/s214435/data/magfield_64.h5')
-    dbmean = np.mean(magnetdb['field'][:][0])
-    dbstd = np.std(magnetdb['field'][:][0])
+    #dbmean = np.mean(magnetdb['field'][:][0])
+    dbstd = np.std(magnetdb['field'])
 
     tf = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((dbmean), (dbstd))]
+        [transforms.ToTensor(), transforms.Normalize((0,0,0), (dbstd, dbstd, dbstd))]
     )
 
     dataset = MagnetismData(
@@ -188,6 +202,7 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
                 loss_ema = loss.item()
             else:
                 loss_ema = 0.9 * loss_ema + 0.1 * loss.item()
+            wandb.log({"loss": loss_ema})
             pbar.set_description(f"loss: {loss_ema:.4f}")
             optim.step()
 
@@ -196,7 +211,7 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
             xh = ddpm.sample(16, (1, 64, 64), device)
             fig, axes = plt.subplots(nrows=4, ncols=4, sharex=True,
                                     sharey=True, figsize=(15,10))
-            norm = colors.Normalize(vmin=-0.25, vmax=0.25)
+            norm = colors.Normalize(vmin=-1, vmax=1)
             
             for j, comp in enumerate(xh):
                 img = comp.cpu().permute(1,2,0)
@@ -217,6 +232,8 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
 
             # save model
             torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
