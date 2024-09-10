@@ -78,14 +78,17 @@ def div(field):
     return div.sum(axis=0)
 
 def train_magnet(
-    n_epoch: int = 100, device: str = "cuda:0", load_pth: Optional[str] = None
+    epochs: int = 101, betas: tuple = (1e-4, 0.02), n_T: int = 1000, features: int = 64, lr: float = 2e-4,
+    batch_size: int = 128,
+    device: str = "cuda:0", load_pth: Optional[str] = None
 ) -> None:
+    
+    cfg = {"epochs": epochs, "betas": betas, "n_T": n_T, 
+                           "features":features, "lr":lr, "batch_size":batch_size }
 
-    cfg = {"epochs": n_epoch, "betas": (1e-4, 0.02), "n_T": 1000, "features":64, "lr":2e-4, "batch_size":128 }
-    
-    
     wandb.init(
         # set the wandb project where this run will be logged
+        entity="dl4mag",
         project="mag-diffusion",
 
         # track hyperparameters and run metadata
@@ -110,7 +113,7 @@ def train_magnet(
     dataloader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=True, num_workers=20)
     optim = torch.optim.Adam(ddpm.parameters(), lr=cfg["lr"])
 
-    for i in range(n_epoch):
+    for i in range(cfg["epochs"]):
         print(f"Epoch {i} : ")
         ddpm.train()
 
@@ -167,4 +170,5 @@ def train_magnet(
 
 
 if __name__ == "__main__":
-    train_magnet()
+    train_magnet(epochs= 101, betas= (1e-4, 0.02), n_T= 1000, 
+                           features=128, lr=2e-4, batch_size=192 )
