@@ -24,8 +24,8 @@ from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 import numpy as np
-
 import wandb
+
 from mindiffusion.unet import NaiveUnet
 
 
@@ -113,9 +113,8 @@ class DDPM(nn.Module):
         This implements Algorithm 1 in the paper.
         """
 
-        _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(
-            x.device
-        )  # t ~ Uniform(0, n_T)
+        _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(x.device)  
+        # t ~ Uniform(0, n_T)
         eps = torch.randn_like(x)  # eps ~ N(0, 1)
 
         x_t = (
@@ -147,18 +146,60 @@ class MagnetismData(Dataset):
         self.transform = transform
 
     def __len__(self):
-        return len(self.db['field'])
+        return len(self.db['field'][:][0])
 
     def __getitem__(self, idx):
         #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
-        field = self.db['field'][idx]
+        field = self.db['field'][idx].transpose(1,2,0)
+        #print(field.shape)
         if self.transform:
             field = self.transform(field)
         return field
+    
+def curl(field):
+    # The magnetic field coming from magtense has
+    # y-direction in the first dimension
+    # x-compenent in the second dimension
+    # Similar to 'xy' indexing in np.meshgrid
+    Fx_y = np.gradient(field[0], axis=0)
+    Fy_x = np.gradient(field[1], axis=1)
 
-def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
+    if field.shape[0]== 3:
+        Fx_z = np.gradient(field[0], axis=2)
+        Fy_z = np.gradient(field[1], axis=2)
+        Fz_x = np.gradient(field[2], axis=1)
+        Fz_y = np.gradient(field[2], axis=0)
+        # Taking gradients of center layer only
+        curl_vec = np.stack([
+            Fz_y - Fy_z,
+            Fx_z - Fz_x,
+            Fy_x - Fx_y], axis=0)[:,:,:,1]
+    else:
+        curl_vec = Fy_x - Fx_y
+    
+    return curl_vec
 
-    cfg = {"epochs": n_epoch, "betas": (1e-4, 0.02), "n_T": 1000}
+
+def div(field):
+    # The magnetic field coming from magtense has
+    # y-direction in the first dimension
+    # x-compenent in the second dimension
+    # Similar to 'xy' indexing in np.meshgrid
+    Fx_x = np.gradient(field[0], axis=1)
+    Fy_y = np.gradient(field[1], axis=0)
+
+    if field.shape[0] == 3:
+        Fz_z = np.gradient(field[2], axis=2)
+        # Taking gradients of center layer only
+        div = np.stack([Fx_x, Fy_y, Fz_z], axis=0)[:,:,:,1]
+    else:                    
+        div = np.stack([Fx_x, Fy_y], axis=0)
+    
+    return div.sum(axis=0)
+
+def train_mnist(n_epoch: int = 100, device="cuda:1") -> None:
+
+    cfg = {"epochs": n_epoch, "betas": (1e-4, 0.02), "n_T": 1000, "features":16, "lr":2e-4, "batch_size":128 }
     
     
     wandb.init(
@@ -169,15 +210,17 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
         config=cfg
     )
     
-    ddpm = DDPM(eps_model=DummyEpsModel(1), betas=cfg["betas"], n_T=cfg["n_T"])
+    ddpm = DDPM(eps_model=NaiveUnet(3, 3, cfg["features"]), betas=cfg["betas"], n_T=cfg["n_T"])
     ddpm.to(device)
 
     magnetdb = h5py.File('/home/s214435/data/magfield_64.h5')
     #dbmean = np.mean(magnetdb['field'][:][0])
     dbstd = np.std(magnetdb['field'])
+    #print(dbstd)
+    #print(magnetdb["field"].shape)
 
     tf = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0,0,0), (dbstd, dbstd, dbstd))]
+        [transforms.ToTensor(), transforms.Normalize((0.0, 0.0, 0.0), (dbstd, dbstd, dbstd))]
     )
 
     dataset = MagnetismData(
@@ -185,8 +228,8 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
     transform=tf
     )
 
-    dataloader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=20)
-    optim = torch.optim.Adam(ddpm.parameters(), lr=2e-4)
+    dataloader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=True, num_workers=20)
+    optim = torch.optim.Adam(ddpm.parameters(), lr=cfg["lr"])
 
     for i in range(n_epoch):
         ddpm.train()
@@ -202,36 +245,47 @@ def train_mnist(n_epoch: int = 100, device="cuda:0") -> None:
                 loss_ema = loss.item()
             else:
                 loss_ema = 0.9 * loss_ema + 0.1 * loss.item()
-            wandb.log({"loss": loss_ema})
             pbar.set_description(f"loss: {loss_ema:.4f}")
             optim.step()
 
-        ddpm.eval()
-        with torch.no_grad():
-            xh = ddpm.sample(16, (1, 64, 64), device)
-            fig, axes = plt.subplots(nrows=4, ncols=4, sharex=True,
-                                    sharey=True, figsize=(15,10))
-            norm = colors.Normalize(vmin=-1, vmax=1)
-            
-            for j, comp in enumerate(xh):
-                img = comp.cpu().permute(1,2,0)
-                ax = axes.flat[j]
-                im = ax.imshow(img.numpy(), cmap='bwr', norm=norm, origin="lower")
+        if (i % 5 == 0):
+            ddpm.eval()
+            with torch.no_grad():
+                xh = ddpm.sample(4, (3, 64, 64), device)
+                print("Hello")
+                fig, axes = plt.subplots(nrows=4, ncols=3, sharex=True,
+                                        sharey=True, figsize=(15,10))
+                norm = colors.Normalize(vmin=-1, vmax=1)
+                
+                tot_curl = 0
+                tot_div = 0
 
-            cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
-            fig.colorbar(im, cax=cbar_ax)
-            fig.savefig(f"./contents/ddpm_sample_{i}.png")
-            plt.close()
+                for j, sam in enumerate(xh):
+                    sam_field = sam.cpu()
+                    tot_curl = tot_curl + abs(curl(sam_field.numpy())).mean()
+                    tot_div = tot_div + abs(div(sam_field.numpy())).mean()
+
+                    for k, comp in enumerate(sam_field):
+                        img = comp.permute(1,2,0)
+                        ax = axes.flat[j*3+k]
+                        im = ax.imshow(img.numpy(), cmap='bwr', norm=norm, origin="lower")
+
+                cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
+                fig.colorbar(im, cax=cbar_ax)
+                fig.savefig(f"./contents/ddpm_sample_{i}.png")
+                plt.close()
+
+                wandb.log({"loss": loss_ema, "avg_curl":tot_curl/4, "avg_div": tot_div/4})
 
 
 
-            #grid = make_grid(xh, nrow=4)
-            
-            
-            #save_image(grid, f"./contents/ddpm_sample_{i}.png")
+                #grid = make_grid(xh, nrow=4)
+                
+                
+                #save_image(grid, f"./contents/ddpm_sample_{i}.png")
 
-            # save model
-            torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
+                # save model
+                torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
 
     wandb.finish()
 
