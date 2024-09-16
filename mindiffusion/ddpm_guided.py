@@ -42,8 +42,9 @@ class DDPM(nn.Module):
 
         return self.criterion(eps, self.eps_model(x_t, _ts / self.n_T))
 
-    def sample(self, n_sample: int, size, device) -> torch.Tensor:
-        x_i = torch.randn(n_sample, *size).to(device)  # x_T ~ N(0, 1)
+    def sample(self, n_sample: int, size, device, guide_weight = (0,0), l_fun = lambda x: 0) -> torch.Tensor:
+        x_i = torch.randn(n_sample, *size).to(device).requires_grad_(True)  # x_T ~ N(0, 1)
+        #x_prev = x_i
 
         # This samples accordingly to Algorithm 2. It is exactly the same logic.
         for i in range(self.n_T, 0, -1):
@@ -51,11 +52,13 @@ class DDPM(nn.Module):
             eps = self.eps_model(
                 x_i, torch.tensor(i / self.n_T).to(device).repeat(n_sample, 1)
             )
+            l_torch = l_fun(x_i-eps)
+            l_torch.backward()
 
             x_i = (
-                self.oneover_sqrta[i] * (x_i - eps  * self.mab_over_sqrtmab[i])
+                self.oneover_sqrta[i] * (x_i - (eps + guide_weight * x_i.grad)  * self.mab_over_sqrtmab[i])
                 + self.sqrt_beta_t[i] * z
-            )
+            ).detach().requires_grad_(True)
 
         return x_i
 

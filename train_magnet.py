@@ -44,19 +44,16 @@ def curl(field):
     Fx_y = np.gradient(field[0], axis=0)
     Fy_x = np.gradient(field[1], axis=1)
 
-    if field.shape[-1]== 4:
-        Fx_z = np.gradient(field[0], axis=2)
-        Fy_z = np.gradient(field[1], axis=2)
-        Fz_x = np.gradient(field[2], axis=1)
-        Fz_y = np.gradient(field[2], axis=0)
-        # Taking gradients of center layer only
-        curl_vec = np.stack([
-            Fz_y - Fy_z,
-            Fx_z - Fz_x,
-            Fy_x - Fx_y], axis=0)[:,:,:,1]
-    else:
-        curl_vec = Fy_x - Fx_y
+    curl_vec = Fy_x - Fx_y
     
+    return curl_vec
+
+def curl_torch(field):
+    Fx_y = torch.gradient(field[0], dim = 0)
+    Fy_x = torch.gradient(field[1], dim = 1)
+
+    curl_vec = Fy_x  - Fx_y
+
     return curl_vec
 
 
@@ -68,37 +65,47 @@ def div(field):
     Fx_x = np.gradient(field[0], axis=1)
     Fy_y = np.gradient(field[1], axis=0)
 
-    if field.shape[-1] == 4:
-        Fz_z = np.gradient(field[2], axis=2)
-        # Taking gradients of center layer only
-        div = np.stack([Fx_x, Fy_y, Fz_z], axis=0)[:,:,:,1]
-    else:                    
-        div = np.stack([Fx_x, Fy_y], axis=0)
+    div = np.stack([Fx_x, Fy_y], axis=0)
     
     return div.sum(axis=0)
+
+def div_torch(field):
+    Fx_x = torch.gradient(field[0], dim=1)
+    Fy_y = torch.gradient(field[1], dim=0)
+
+    div = torch.stack([Fx_x[0], Fy_y[0]], dim=0)
+
+    return torch.sum(div, dim=0)
+
+# def loss_mag(fields):
+#     loss = 0
+#     for field in fields:
+        
+        
+
 
 def train_magnet(
     epochs: int = 101, betas: tuple = (1e-4, 0.02), n_T: int = 1000, features: int = 64, lr: float = 2e-4,
     batch_size: int = 128,
-    device: str = "cuda:0", load_pth: Optional[str] = None
+    device: str = "cuda:1", load_pth: Optional[str] = None
 ) -> None:
     
     cfg = {"epochs": epochs, "betas": betas, "n_T": n_T, 
                            "features":features, "lr":lr, "batch_size":batch_size }
 
-    wandb.init(
-        # set the wandb project where this run will be logged
-        entity="dl4mag",
-        project="mag-diffusion",
+    # wandb.init(
+    #     # set the wandb project where this run will be logged
+    #     entity="dl4mag",
+    #     project="mag-diffusion",
 
-        # track hyperparameters and run metadata
-        config=cfg
-    )
+    #     # track hyperparameters and run metadata
+    #     config=cfg
+    # )
     
     ddpm = DDPM(eps_model=NaiveUnet(3, 3, n_feat=cfg["features"]), betas=cfg["betas"], n_T=cfg["n_T"])
     ddpm.to(device)
 
-    magnetdb = h5py.File('/home/s214435/data/magfield_64_30000.h5')
+    magnetdb = h5py.File('/home/s214435/data/magfield_64.h5')
     dbstd = np.std(magnetdb['field'])
 
     tf = transforms.Compose(
@@ -134,41 +141,40 @@ def train_magnet(
 
         if (i % 5 == 0):
             ddpm.eval()
-            with torch.no_grad():
-                xh = ddpm.sample(4, (3, 64, 64), device)
-                fig, axes = plt.subplots(nrows=4, ncols=3, sharex=True,
-                                        sharey=True, figsize=(8,8))
-                norm = colors.Normalize(vmin=-1, vmax=1)
-                
-                tot_curl = 0
-                tot_div = 0
+            #with torch.no_grad():
+            xh = ddpm.sample(4, (3, 64, 64), device)
+            fig, axes = plt.subplots(nrows=4, ncols=3, sharex=True,
+                                    sharey=True, figsize=(8,8))
+            norm = colors.Normalize(vmin=-1, vmax=1)
+            
+            tot_curl = 0
+            tot_div = 0
 
-                for j, sam in enumerate(xh):
-                    sam_field = sam.cpu()
-                    tot_curl = tot_curl + abs(curl(sam_field.numpy())).mean()
-                    tot_div = tot_div + abs(div(sam_field.numpy())).mean()
+            for j, sam in enumerate(xh):
+                sam_field = sam.cpu()
+                tot_curl = tot_curl + abs(curl(sam_field.numpy())).mean()
+                tot_div = tot_div + abs(div(sam_field.numpy())).mean()
 
-                    for k, comp in enumerate(sam_field):
-                        #img = comp.permute(1,2,0)
-                        ax = axes.flat[j*3+k]
-                        im = ax.imshow(comp.numpy(), cmap='bwr', norm=norm, origin="lower")
+                for k, comp in enumerate(sam_field):
+                    #img = comp.permute(1,2,0)
+                    ax = axes.flat[j*3+k]
+                    im = ax.imshow(comp.numpy(), cmap='bwr', norm=norm, origin="lower")
 
-                cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
-                fig.colorbar(im, cax=cbar_ax)
-                fig.savefig(f"./contents/ddpm_sample_{i}.png")
+            cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
+            fig.colorbar(im, cax=cbar_ax)
+            fig.savefig(f"./contents/ddpm_sample_{i}.png")
 
-                wandb.log({"loss": loss_ema, "avg_curl":tot_curl/4, "avg_div": tot_div/4, "sample":wandb.Image(fig)})
+            #wandb.log({"loss": loss_ema, "avg_curl":tot_curl/4, "avg_div": tot_div/4, "sample":wandb.Image(fig)})
 
-                plt.close()
+            plt.close()
 
-                # save model
-                torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
-        else:
-            wandb.log({"loss": loss_ema})
-
-    wandb.finish()
+            # save model
+            torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
+    #     else:
+    #         wandb.log({"loss": loss_ema})
+    # wandb.finish()
 
 
 if __name__ == "__main__":
     train_magnet(epochs= 101, betas= (1e-4, 0.02), n_T= 1000, 
-                           features=128, lr=2e-4, batch_size=192 )
+                           features=128, lr=1e-5, batch_size=128 )
