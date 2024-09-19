@@ -5,3 +5,4 @@ ddpm*.png
 .env
 wandb
 .vscode
+nohup.out

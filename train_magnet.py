@@ -11,7 +11,7 @@ from torchvision import transforms
 from torchvision.utils import save_image, make_grid
 
 from mindiffusion.unet import NaiveUnet
-from mindiffusion.ddpm import DDPM
+from mindiffusion.ddpm_guided import DDPM
 
 import h5py
 from torch.utils.data import Dataset
@@ -29,91 +29,57 @@ class MagnetismData(Dataset):
         return self.db['field'].shape[0]
 
     def __getitem__(self, idx):
-        #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
         field = self.db['field'][idx].transpose(1,2,0)
-        #print(field.shape)
         if self.transform:
             field = self.transform(field)
         return field
     
-def curl(field):
-    # The magnetic field coming from magtense has
-    # y-direction in the first dimension
-    # x-compenent in the second dimension
-    # Similar to 'xy' indexing in np.meshgrid
-    Fx_y = np.gradient(field[0], axis=0)
-    Fy_x = np.gradient(field[1], axis=1)
+def curl_2d(field) -> np.ndarray:
+    Fx_y = np.gradient(field[0], axis=1)
+    Fy_x = np.gradient(field[1], axis=0)
+    return Fy_x - Fx_y
 
-    curl_vec = Fy_x - Fx_y
-    
-    return curl_vec
-
-def curl_torch(field):
-    Fx_y = torch.gradient(field[0], dim = 0)
-    Fy_x = torch.gradient(field[1], dim = 1)
-
-    curl_vec = Fy_x  - Fx_y
-
-    return curl_vec
-
-
-def div(field):
-    # The magnetic field coming from magtense has
-    # y-direction in the first dimension
-    # x-compenent in the second dimension
-    # Similar to 'xy' indexing in np.meshgrid
-    Fx_x = np.gradient(field[0], axis=1)
-    Fy_y = np.gradient(field[1], axis=0)
-
+def div_2d(field) -> np.ndarray:
+    Fx_x = np.gradient(field[0], axis=0)
+    Fy_y = np.gradient(field[1], axis=1)
     div = np.stack([Fx_x, Fy_y], axis=0)
-    
+
     return div.sum(axis=0)
-
-def div_torch(field):
-    Fx_x = torch.gradient(field[0], dim=1)
-    Fy_y = torch.gradient(field[1], dim=0)
-
-    div = torch.stack([Fx_x[0], Fy_y[0]], dim=0)
-
-    return torch.sum(div, dim=0)
-
-# def loss_mag(fields):
-#     loss = 0
-#     for field in fields:
-        
-        
-
 
 def train_magnet(
     epochs: int = 101, betas: tuple = (1e-4, 0.02), n_T: int = 1000, features: int = 64, lr: float = 2e-4,
     batch_size: int = 128,
-    device: str = "cuda:1", load_pth: Optional[str] = None
+    device: str = "cuda:1"#, load_pth: Optional[str] = None
 ) -> None:
     
+    dbpath = '/home/s214435/data/magfield_symm_64_30000.h5'
+
     cfg = {"epochs": epochs, "betas": betas, "n_T": n_T, 
-                           "features":features, "lr":lr, "batch_size":batch_size }
+                           "features":features, "lr":lr, "batch_size":batch_size, "db":dbpath}
 
-    # wandb.init(
-    #     # set the wandb project where this run will be logged
-    #     entity="dl4mag",
-    #     project="mag-diffusion",
+    wandb.init(
+        # set the wandb project where this run will be logged
+        entity="dl4mag",
+        project="mag-diffusion",
 
-    #     # track hyperparameters and run metadata
-    #     config=cfg
-    # )
+        # track hyperparameters and run metadata
+        config=cfg
+    )
     
-    ddpm = DDPM(eps_model=NaiveUnet(3, 3, n_feat=cfg["features"]), betas=cfg["betas"], n_T=cfg["n_T"])
+
+    db = h5py.File(dbpath)
+    dbstd = np.std(db['field'])
+    channels = db["field"].shape[1]
+
+    ddpm = DDPM(eps_model=NaiveUnet(channels, channels, n_feat=cfg["features"]), betas=cfg["betas"], n_T=cfg["n_T"])
     ddpm.to(device)
 
-    magnetdb = h5py.File('/home/s214435/data/magfield_64.h5')
-    dbstd = np.std(magnetdb['field'])
-
     tf = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.0, 0.0, 0.0), (dbstd, dbstd, dbstd))]
+        [transforms.ToTensor(), transforms.Normalize((0.0, )*channels, (dbstd, )*channels)]
     )
 
     dataset = MagnetismData(
-    magnetdb,
+    db,
     transform=tf
     )
 
@@ -125,9 +91,9 @@ def train_magnet(
         ddpm.train()
 
 
-        pbar = tqdm(dataloader)
+        #pbar = tqdm(dataloader)
         loss_ema = None
-        for x in pbar:
+        for x in dataloader:
             optim.zero_grad()
             x = x.to(device)
             loss = ddpm(x)
@@ -136,43 +102,48 @@ def train_magnet(
                 loss_ema = loss.item()
             else:
                 loss_ema = 0.9 * loss_ema + 0.1 * loss.item()
-            pbar.set_description(f"loss: {loss_ema:.4f}")
+            #pbar.set_description(f"loss: {loss_ema:.4f}")
             optim.step()
 
         if (i % 5 == 0):
             ddpm.eval()
-            #with torch.no_grad():
-            xh = ddpm.sample(4, (3, 64, 64), device)
-            fig, axes = plt.subplots(nrows=4, ncols=3, sharex=True,
-                                    sharey=True, figsize=(8,8))
-            norm = colors.Normalize(vmin=-1, vmax=1)
-            
-            tot_curl = 0
-            tot_div = 0
+            with torch.no_grad():
+                samples = 4
+                xh = ddpm.sample(samples, (channels, 64, 64), device)
+                fig, axes = plt.subplots(nrows=samples, ncols=channels, sharex=True,
+                                        sharey=True, figsize=(8,8))
+                norm = colors.Normalize(vmin=-1, vmax=1)
+                
+                tot_curl = 0
+                tot_div = 0
 
-            for j, sam in enumerate(xh):
-                sam_field = sam.cpu()
-                tot_curl = tot_curl + abs(curl(sam_field.numpy())).mean()
-                tot_div = tot_div + abs(div(sam_field.numpy())).mean()
+                for j, sam in enumerate(xh):
+                    sam_field = sam.cpu()
+                    tot_curl = tot_curl + abs(curl_2d(sam_field.numpy()*dbstd)).mean()
+                    tot_div = tot_div + abs(div_2d(sam_field.numpy())*dbstd).mean()
 
-                for k, comp in enumerate(sam_field):
-                    #img = comp.permute(1,2,0)
-                    ax = axes.flat[j*3+k]
-                    im = ax.imshow(comp.numpy(), cmap='bwr', norm=norm, origin="lower")
+                    for k, comp in enumerate(sam_field):
+                        #img = comp.permute(1,2,0)
+                        ax = axes.flat[j*channels+k]
+                        im = ax.imshow(comp.numpy(), cmap='bwr', norm=norm, origin="lower")
 
-            cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
-            fig.colorbar(im, cax=cbar_ax)
-            fig.savefig(f"./contents/ddpm_sample_{i}.png")
+                cbar_ax = fig.add_axes([0.9, 0.345, 0.015, 0.3])
+                fig.colorbar(im, cax=cbar_ax)
+                #fig.savefig(f"./contents/ddpm_sample_{i}.png")
+                print(f"Loss: {loss_ema} | Div: {tot_div/samples} | Curl: {tot_curl/samples}")
 
-            #wandb.log({"loss": loss_ema, "avg_curl":tot_curl/4, "avg_div": tot_div/4, "sample":wandb.Image(fig)})
+                wandb.log({"loss": loss_ema, "avg_curl":tot_curl/samples, "avg_div": tot_div/samples, "sample":wandb.Image(fig)})
 
-            plt.close()
+                plt.close()
 
-            # save model
-            torch.save(ddpm.state_dict(), f"./ddpm_mnist.pth")
-    #     else:
-    #         wandb.log({"loss": loss_ema})
-    # wandb.finish()
+                # save model
+                torch.save(ddpm.state_dict(), f"./ddpm_magnet.pth")
+        else:
+            print(f"Loss: {loss_ema}")
+            wandb.log({"loss": loss_ema})
+
+    wandb.save(f"./ddpm_magnet.pth")
+    wandb.finish()
 
 
 if __name__ == "__main__":

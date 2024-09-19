@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+#Based on: https://arxiv.org/pdf/2006.11239 (p1)
 
 class DDPM(nn.Module):
     def __init__(
