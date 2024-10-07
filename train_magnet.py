@@ -135,12 +135,12 @@ def train_magnet(
                 wandb.log({"loss": loss_ema, "avg_curl":tot_curl/samples, "avg_div": tot_div/samples, "sample":wandb.Image(fig)})
 
                 plt.close()
-
-                # save model
-                torch.save(ddpm.state_dict(), f"./ddpm_magnet.pth")
         else:
             print(f"Loss: {loss_ema}")
             wandb.log({"loss": loss_ema})
+
+        # save model
+        torch.save(ddpm.state_dict(), f"./ddpm_magnet.pth")
 
     wandb.save(f"./ddpm_magnet.pth")
     wandb.finish()

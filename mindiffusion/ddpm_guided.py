@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Callable
 
 
 import torch
@@ -44,7 +44,7 @@ class DDPM(nn.Module):
 
         return self.criterion(eps, self.eps_model(x_t, _ts / self.n_T))
 
-    def sample(self, n_sample: int, size, device, guide_weight: float = 0.0, guide_fun: Optional[function] = None) -> torch.Tensor:
+    def sample(self, n_sample: int, size, device, guide_weight: float = 0.0, guide_fun: Optional[Callable] = None, std: float = 1) -> torch.Tensor:
         x_i = torch.randn(n_sample, *size).to(device).requires_grad_(True)  # x_T ~ N(0, 1)
         if guide_fun == None:
             with torch.no_grad():
@@ -66,13 +66,14 @@ class DDPM(nn.Module):
                 eps = self.eps_model(
                     x_i, torch.tensor(i / self.n_T).to(device).repeat(n_sample, 1)
                 )
-                l_guide = torch.sum(torch.vmap(guide_fun)(x_i-eps))
+                l_guide = torch.sum(torch.vmap(lambda x_temp: torch.linalg.norm(guide_fun(x_temp*std))**2/(64**2))(x_i-eps))
                 l_guide.backward()
 
                 x_i = (
                     self.oneover_sqrta[i] * (x_i - eps  * self.mab_over_sqrtmab[i])
-                    + self.sqrt_beta_t[i] * z - guide_weight * x_i.grad
+                    + self.sqrt_beta_t[i] * z - guide_weight*x_i.grad
                 ).detach().requires_grad_(True)
+
 
         return x_i.detach()
 
